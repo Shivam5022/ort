@@ -1,10 +1,11 @@
 use alloc::string::String;
+use bincode::{Decode, Encode};
 use core::{
 	ffi::c_void,
 	iter::FusedIterator,
 	mem::ManuallyDrop,
 	ops::{Index, IndexMut},
-	ptr
+	ptr,
 };
 
 use smallvec::SmallVec;
@@ -12,7 +13,7 @@ use smallvec::SmallVec;
 use crate::{
 	memory::Allocator,
 	util::STACK_SESSION_OUTPUTS,
-	value::{DynValue, ValueRef, ValueRefMut}
+	value::{DynValue, ValueRef, ValueRefMut},
 };
 
 /// The outputs returned by a [`Session`] inference call.
@@ -40,7 +41,7 @@ pub struct SessionOutputs<'r, 's> {
 	keys: SmallVec<&'r str, { STACK_SESSION_OUTPUTS }>,
 	values: SmallVec<DynValue, { STACK_SESSION_OUTPUTS }>,
 	effective_len: usize,
-	backing_ptr: Option<(&'s Allocator, *mut c_void)>
+	backing_ptr: Option<(&'s Allocator, *mut c_void)>,
 }
 
 unsafe impl Send for SessionOutputs<'_, '_> {}
@@ -52,7 +53,7 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 			effective_len: output_names.len(),
 			keys: output_names,
 			values: output_values,
-			backing_ptr: None
+			backing_ptr: None,
 		}
 	}
 
@@ -60,14 +61,14 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 		output_names: SmallVec<&'r str, { STACK_SESSION_OUTPUTS }>,
 		output_values: SmallVec<DynValue, { STACK_SESSION_OUTPUTS }>,
 		allocator: &'s Allocator,
-		backing_ptr: *mut c_void
+		backing_ptr: *mut c_void,
 	) -> Self {
 		debug_assert_eq!(output_names.len(), output_values.len());
 		Self {
 			effective_len: output_names.len(),
 			keys: output_names,
 			values: output_values,
-			backing_ptr: Some((allocator, backing_ptr))
+			backing_ptr: Some((allocator, backing_ptr)),
 		}
 	}
 
@@ -76,7 +77,7 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 			effective_len: 0,
 			keys: SmallVec::new(),
 			values: SmallVec::new(),
-			backing_ptr: None
+			backing_ptr: None,
 		}
 	}
 
@@ -135,7 +136,7 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 	pub fn keys(&self) -> Keys<'_, 'r> {
 		Keys {
 			iter: self.keys.iter(),
-			effective_len: self.effective_len
+			effective_len: self.effective_len,
 		}
 	}
 
@@ -143,7 +144,7 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 		Values {
 			key_iter: self.keys.iter(),
 			value_iter: self.values.iter(),
-			effective_len: self.effective_len
+			effective_len: self.effective_len,
 		}
 	}
 
@@ -151,7 +152,7 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 		ValuesMut {
 			key_iter: self.keys.iter(),
 			value_iter: self.values.iter_mut(),
-			effective_len: self.effective_len
+			effective_len: self.effective_len,
 		}
 	}
 
@@ -159,7 +160,7 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 		Iter {
 			key_iter: self.keys.iter(),
 			value_iter: self.values.iter(),
-			effective_len: self.effective_len
+			effective_len: self.effective_len,
 		}
 	}
 
@@ -167,7 +168,7 @@ impl<'r, 's> SessionOutputs<'r, 's> {
 		IterMut {
 			key_iter: self.keys.iter(),
 			value_iter: self.values.iter_mut(),
-			effective_len: self.effective_len
+			effective_len: self.effective_len,
 		}
 	}
 }
@@ -202,7 +203,7 @@ impl<'r, 's> IntoIterator for SessionOutputs<'r, 's> {
 			keys,
 			values,
 			effective_len: this.effective_len,
-			backing_ptr: this.backing_ptr
+			backing_ptr: this.backing_ptr,
 		}
 	}
 }
@@ -262,7 +263,7 @@ impl IndexMut<usize> for SessionOutputs<'_, '_> {
 
 pub struct Keys<'x, 'r> {
 	iter: core::slice::Iter<'x, &'r str>,
-	effective_len: usize
+	effective_len: usize,
 }
 
 impl<'r> Iterator for Keys<'_, 'r> {
@@ -292,7 +293,7 @@ impl FusedIterator for Keys<'_, '_> {}
 pub struct Values<'x, 'k> {
 	value_iter: core::slice::Iter<'x, DynValue>,
 	key_iter: core::slice::Iter<'x, &'k str>,
-	effective_len: usize
+	effective_len: usize,
 }
 
 impl<'x> Iterator for Values<'x, '_> {
@@ -322,7 +323,7 @@ impl FusedIterator for Values<'_, '_> {}
 pub struct ValuesMut<'x, 'k> {
 	value_iter: core::slice::IterMut<'x, DynValue>,
 	key_iter: core::slice::Iter<'x, &'k str>,
-	effective_len: usize
+	effective_len: usize,
 }
 
 impl<'x> Iterator for ValuesMut<'x, '_> {
@@ -352,7 +353,7 @@ impl FusedIterator for ValuesMut<'_, '_> {}
 pub struct Iter<'x, 'k> {
 	value_iter: core::slice::Iter<'x, DynValue>,
 	key_iter: core::slice::Iter<'x, &'k str>,
-	effective_len: usize
+	effective_len: usize,
 }
 
 impl<'x, 'k> Iterator for Iter<'x, 'k> {
@@ -382,7 +383,7 @@ impl FusedIterator for Iter<'_, '_> {}
 pub struct IterMut<'x, 'k> {
 	value_iter: core::slice::IterMut<'x, DynValue>,
 	key_iter: core::slice::Iter<'x, &'k str>,
-	effective_len: usize
+	effective_len: usize,
 }
 
 impl<'x, 'k> Iterator for IterMut<'x, 'k> {
@@ -413,7 +414,7 @@ pub struct IntoIter<'r, 's> {
 	keys: smallvec::IntoIter<&'r str, { STACK_SESSION_OUTPUTS }>,
 	values: smallvec::IntoIter<DynValue, { STACK_SESSION_OUTPUTS }>,
 	effective_len: usize,
-	backing_ptr: Option<(&'s Allocator, *mut c_void)>
+	backing_ptr: Option<(&'s Allocator, *mut c_void)>,
 }
 
 impl<'r> Iterator for IntoIter<'r, '_> {

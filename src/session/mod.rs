@@ -18,7 +18,7 @@ use core::{
 	marker::PhantomData,
 	ops::{Deref, DerefMut},
 	ptr::{self, NonNull},
-	slice
+	slice,
 };
 #[cfg(feature = "std")]
 use std::ffi::CString;
@@ -33,7 +33,7 @@ use crate::{
 	metadata::ModelMetadata,
 	ortsys,
 	util::{STACK_SESSION_INPUTS, STACK_SESSION_OUTPUTS, with_cstr_ptr_array},
-	value::{DynValue, Value, ValueType}
+	value::{DynValue, Value, ValueType},
 };
 
 #[cfg(feature = "std")]
@@ -50,7 +50,7 @@ use self::{builder::SessionBuilder, run_options::UntypedRunOptions};
 pub use self::{
 	input::{SessionInputValue, SessionInputs},
 	output::SessionOutputs,
-	run_options::{HasSelectedOutputs, NoSelectedOutputs, RunOptions, SelectedOutputMarker}
+	run_options::{HasSelectedOutputs, NoSelectedOutputs, RunOptions, SelectedOutputMarker},
 };
 
 /// Holds onto an [`ort_sys::OrtSession`] pointer and its associated allocator.
@@ -64,7 +64,7 @@ pub struct SharedSessionInner {
 	_initializers: SmallVec<Arc<DynValue>, 4>,
 	/// Additional things we may need to hold onto for the duration of this session, like `OperatorDomain`s and
 	/// DLL handles for operator libraries.
-	_extras: SmallVec<Box<dyn Any>, 4>
+	_extras: SmallVec<Box<dyn Any>, 4>,
 }
 
 unsafe impl Send for SharedSessionInner {}
@@ -102,7 +102,7 @@ pub struct Session {
 	/// Information about the graph's inputs.
 	pub inputs: Vec<Input>,
 	/// Information about the graph's outputs.
-	pub outputs: Vec<Output>
+	pub outputs: Vec<Output>,
 }
 
 /// A [`Session`] where the graph data is stored in memory.
@@ -111,7 +111,7 @@ pub struct Session {
 /// [`Session`] for usage details.
 pub struct InMemorySession<'s> {
 	session: Session,
-	phantom: PhantomData<&'s ()>
+	phantom: PhantomData<&'s ()>,
 }
 
 impl Deref for InMemorySession<'_> {
@@ -132,7 +132,7 @@ pub struct Input {
 	/// Name of the input.
 	pub name: String,
 	/// Type of the input's elements.
-	pub input_type: ValueType
+	pub input_type: ValueType,
 }
 
 /// Information about a [`Session`] output.
@@ -141,7 +141,7 @@ pub struct Output {
 	/// Name of the output.
 	pub name: String,
 	/// Type of the output's elements.
-	pub output_type: ValueType
+	pub output_type: ValueType,
 }
 
 impl Session {
@@ -249,7 +249,7 @@ impl Session {
 	pub fn run_with_options<'r, 's: 'r, 'i, 'v: 'i, O: SelectedOutputMarker, const N: usize>(
 		&'s mut self,
 		input_values: impl Into<SessionInputs<'i, 'v, N>>,
-		run_options: &'r RunOptions<O>
+		run_options: &'r RunOptions<O>,
 	) -> Result<SessionOutputs<'r, 's>> {
 		match input_values.into() {
 			SessionInputs::ValueSlice(input_values) => {
@@ -268,7 +268,7 @@ impl Session {
 		&'s self,
 		input_names: SmallVec<&str, { STACK_SESSION_INPUTS }>,
 		input_values: SmallVec<&'i SessionInputValue<'v>, { STACK_SESSION_INPUTS }>,
-		run_options: Option<&'r UntypedRunOptions>
+		run_options: Option<&'r UntypedRunOptions>,
 	) -> Result<SessionOutputs<'r, 's>> {
 		if input_values.len() > input_names.len() {
 			// If we provide more inputs than the model expects with `ort::inputs![a, b, c]`, then we get an `input_names` shorter
@@ -277,19 +277,19 @@ impl Session {
 			// `ValueMap` inputs since the number of names & values are always equal as its a vec of tuples.
 			return Err(Error::new_with_code(
 				ErrorCode::InvalidArgument,
-				format!("{} inputs were provided, but the model only accepts {}.", input_values.len(), input_names.len())
+				format!("{} inputs were provided, but the model only accepts {}.", input_values.len(), input_names.len()),
 			));
 		}
 
 		let (output_names, mut output_tensors) = match run_options {
 			Some(r) => r.outputs.resolve_outputs(&self.outputs),
-			None => (self.outputs.iter().map(|o| o.name.as_str()).collect(), iter::repeat_with(|| None).take(self.outputs.len()).collect())
+			None => (self.outputs.iter().map(|o| o.name.as_str()).collect(), iter::repeat_with(|| None).take(self.outputs.len()).collect()),
 		};
 		let output_value_ptrs: SmallVec<*mut ort_sys::OrtValue, { STACK_SESSION_OUTPUTS }> = output_tensors
 			.iter_mut()
 			.map(|c| match c {
 				Some(v) => v.ptr_mut(),
-				None => ptr::null_mut()
+				None => ptr::null_mut(),
 			})
 			.collect();
 		let input_value_ptrs: SmallVec<*const ort_sys::OrtValue, { STACK_SESSION_INPUTS }> = input_values.iter().map(|c| c.ptr()).collect();
@@ -322,9 +322,9 @@ impl Session {
 				None => unsafe {
 					Value::from_ptr(
 						NonNull::new(output_value_ptrs[i]).expect("OrtValue ptr returned from session Run should not be null"),
-						Some(Arc::clone(&self.inner))
+						Some(Arc::clone(&self.inner)),
 					)
-				}
+				},
 			})
 			.collect();
 
@@ -338,7 +338,7 @@ impl Session {
 	pub fn run_binding_with_options<'r, 'b, 's: 'b>(
 		&'s mut self,
 		binding: &'b IoBinding,
-		run_options: &'r RunOptions<NoSelectedOutputs>
+		run_options: &'r RunOptions<NoSelectedOutputs>,
 	) -> Result<SessionOutputs<'b, 's>> {
 		self.run_binding_inner(binding, Some(run_options))
 	}
@@ -346,7 +346,7 @@ impl Session {
 	fn run_binding_inner<'r, 'b, 's: 'b>(
 		&'s self,
 		binding: &'b IoBinding,
-		run_options: Option<&'r RunOptions<NoSelectedOutputs>>
+		run_options: Option<&'r RunOptions<NoSelectedOutputs>>,
 	) -> Result<SessionOutputs<'b, 's>> {
 		let run_options_ptr = if let Some(run_options) = run_options { run_options.ptr() } else { ptr::null() };
 		ortsys![unsafe RunWithBinding(self.inner.ptr().cast_mut(), run_options_ptr, binding.ptr())?];
@@ -374,7 +374,7 @@ impl Session {
 				binding.output_values.iter().map(|(k, _)| k.as_str()).collect(),
 				output_values,
 				self.allocator(),
-				output_values_ptr.cast()
+				output_values_ptr.cast(),
 			))
 		} else {
 			Ok(SessionOutputs::new_empty())
@@ -406,7 +406,7 @@ impl Session {
 	pub fn run_async<'r, 's: 'r, 'i, 'v: 'i + 's, O: SelectedOutputMarker, const N: usize>(
 		&'s mut self,
 		input_values: impl Into<SessionInputs<'i, 'v, N>>,
-		run_options: &'r RunOptions<O>
+		run_options: &'r RunOptions<O>,
 	) -> Result<InferenceFut<'s, 'r, 'v>> {
 		match input_values.into() {
 			SessionInputs::ValueSlice(input_values) => {
@@ -426,7 +426,7 @@ impl Session {
 		&'s self,
 		input_names: SmallVec<&str, { STACK_SESSION_INPUTS }>,
 		input_values: SmallVec<&SessionInputValue<'v>, { STACK_SESSION_INPUTS }>,
-		run_options: &'r UntypedRunOptions
+		run_options: &'r UntypedRunOptions,
 	) -> Result<InferenceFut<'s, 'r, 'v>> {
 		let input_name_ptrs = input_names
 			.into_iter()
@@ -440,7 +440,7 @@ impl Session {
 			input_inner_holders.push(Arc::clone(match input {
 				SessionInputValue::ViewMut(v) => &(**v).inner,
 				SessionInputValue::View(v) => &(**v).inner,
-				SessionInputValue::Owned(v) => &v.inner
+				SessionInputValue::Owned(v) => &v.inner,
 			}));
 		}
 
@@ -454,7 +454,7 @@ impl Session {
 			.iter_mut()
 			.map(|c| match c {
 				Some(v) => v.ptr_mut(),
-				None => ptr::null_mut()
+				None => ptr::null_mut(),
 			})
 			.collect();
 
@@ -472,7 +472,7 @@ impl Session {
 			output_name_ptrs,
 			output_names,
 			output_value_ptrs: output_tensor_ptrs,
-			session_inner: &self.inner
+			session_inner: &self.inner,
 		}));
 
 		ortsys![
@@ -537,7 +537,7 @@ impl Session {
 		static KEY: &[u8] = b"ep.dynamic.workload_type\0";
 		match workload_type {
 			WorkloadType::Default => self.set_dynamic_option(KEY.as_ptr().cast(), c"Default".as_ptr().cast()),
-			WorkloadType::Efficient => self.set_dynamic_option(KEY.as_ptr().cast(), c"Efficient".as_ptr().cast())
+			WorkloadType::Efficient => self.set_dynamic_option(KEY.as_ptr().cast(), c"Efficient".as_ptr().cast()),
 		}
 	}
 
@@ -556,7 +556,7 @@ pub enum WorkloadType {
 	#[default]
 	Default,
 	/// Prioritize efficiency, by i.e. reducing scheduling priority and/or offloading to efficiency cores.
-	Efficient
+	Efficient,
 }
 
 // https://github.com/microsoft/onnxruntime/issues/114
@@ -576,7 +576,7 @@ impl AsPointer for Session {
 #[derive(Debug, Clone)]
 pub struct OverridableInitializer {
 	name: String,
-	dtype: ValueType
+	dtype: ValueType,
 }
 
 impl OverridableInitializer {
@@ -604,7 +604,7 @@ mod dangerous {
 
 	fn extract_io_count(
 		f: unsafe extern "system" fn(*const ort_sys::OrtSession, *mut usize) -> ort_sys::OrtStatusPtr,
-		session_ptr: NonNull<ort_sys::OrtSession>
+		session_ptr: NonNull<ort_sys::OrtSession>,
 	) -> Result<usize> {
 		let mut num_nodes = 0;
 		let status = unsafe { f(session_ptr.as_ptr(), &mut num_nodes) };
@@ -638,7 +638,7 @@ mod dangerous {
 		f: unsafe extern "system" fn(*const ort_sys::OrtSession, usize, *mut ort_sys::OrtAllocator, *mut *mut c_char) -> ort_sys::OrtStatusPtr,
 		session_ptr: NonNull<ort_sys::OrtSession>,
 		allocator: &Allocator,
-		i: usize
+		i: usize,
 	) -> Result<String> {
 		let mut name_ptr: *mut c_char = ptr::null_mut();
 
@@ -669,7 +669,7 @@ mod dangerous {
 	fn extract_io(
 		f: unsafe extern "system" fn(*const ort_sys::OrtSession, usize, *mut *mut ort_sys::OrtTypeInfo) -> ort_sys::OrtStatusPtr,
 		session_ptr: NonNull<ort_sys::OrtSession>,
-		i: usize
+		i: usize,
 	) -> Result<ValueType> {
 		let mut typeinfo_ptr: *mut ort_sys::OrtTypeInfo = ptr::null_mut();
 

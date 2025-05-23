@@ -1,18 +1,19 @@
 //! Types for managing memory & device allocations.
 
 use alloc::sync::Arc;
+use bincode::Encode;
 use core::{
 	ffi::{c_char, c_int, c_void},
 	mem,
 	ptr::{self, NonNull},
-	slice, str
+	slice, str,
 };
 
 use crate::{
 	AsPointer,
 	error::{Result, status_to_result},
 	ortsys,
-	session::{Session, SharedSessionInner}
+	session::{Session, SharedSessionInner},
 };
 
 /// A device allocator used to manage the allocation of [`Value`]s.
@@ -76,7 +77,7 @@ pub struct Allocator {
 	is_default: bool,
 	_info: Option<MemoryInfo>,
 	/// Hold a reference to the session if this allocator is tied to one.
-	_session_inner: Option<Arc<SharedSessionInner>>
+	_session_inner: Option<Arc<SharedSessionInner>>,
 }
 
 unsafe impl Send for Allocator {}
@@ -91,7 +92,7 @@ impl Allocator {
 			// currently, this function is only ever used in session creation, where we call `CreateAllocator` manually and store the allocator resulting from
 			// this function in the `SharedSessionInner` - we don't need to hold onto the session, because the session is holding onto us.
 			_session_inner: None,
-			_info: None
+			_info: None,
 		}
 	}
 
@@ -158,7 +159,7 @@ impl Allocator {
 			ptr: unsafe { NonNull::new_unchecked(allocator_ptr) },
 			is_default: false,
 			_session_inner: Some(session.inner()),
-			_info: Some(memory_info)
+			_info: Some(memory_info),
 		})
 	}
 }
@@ -178,7 +179,7 @@ impl Default for Allocator {
 			is_default: true,
 			// The default allocator isn't tied to a session.
 			_session_inner: None,
-			_info: None
+			_info: None,
 		}
 	}
 }
@@ -202,7 +203,7 @@ impl Drop for Allocator {
 /// A block of memory allocated by an [`Allocator`].
 pub struct AllocatedBlock<'a> {
 	ptr: *mut c_void,
-	allocator: &'a Allocator
+	allocator: &'a Allocator,
 }
 
 impl AllocatedBlock<'_> {
@@ -280,14 +281,14 @@ pub enum AllocatorType {
 	/// Default device-specific allocator.
 	Device,
 	/// Arena allocator.
-	Arena
+	Arena,
 }
 
 impl From<AllocatorType> for ort_sys::OrtAllocatorType {
 	fn from(val: AllocatorType) -> Self {
 		match val {
 			AllocatorType::Device => ort_sys::OrtAllocatorType::OrtDeviceAllocator,
-			AllocatorType::Arena => ort_sys::OrtAllocatorType::OrtArenaAllocator
+			AllocatorType::Arena => ort_sys::OrtAllocatorType::OrtArenaAllocator,
 		}
 	}
 }
@@ -301,7 +302,7 @@ pub enum MemoryType {
 	CPUOutput,
 	/// The default (typically device memory) allocator for an execution provider.
 	#[default]
-	Default
+	Default,
 }
 
 impl MemoryType {
@@ -314,7 +315,7 @@ impl From<MemoryType> for ort_sys::OrtMemType {
 		match val {
 			MemoryType::CPUInput => ort_sys::OrtMemType::OrtMemTypeCPUInput,
 			MemoryType::CPUOutput => ort_sys::OrtMemType::OrtMemTypeCPUOutput,
-			MemoryType::Default => ort_sys::OrtMemType::OrtMemTypeDefault
+			MemoryType::Default => ort_sys::OrtMemType::OrtMemTypeDefault,
 		}
 	}
 }
@@ -324,7 +325,7 @@ impl From<ort_sys::OrtMemType> for MemoryType {
 		match value {
 			ort_sys::OrtMemType::OrtMemTypeCPUInput => MemoryType::CPUInput,
 			ort_sys::OrtMemType::OrtMemTypeCPUOutput => MemoryType::CPUOutput,
-			ort_sys::OrtMemType::OrtMemTypeDefault => MemoryType::Default
+			ort_sys::OrtMemType::OrtMemTypeDefault => MemoryType::Default,
 		}
 	}
 }
@@ -334,7 +335,7 @@ impl From<ort_sys::OrtMemType> for MemoryType {
 pub enum DeviceType {
 	CPU,
 	GPU,
-	FPGA
+	FPGA,
 }
 
 impl From<DeviceType> for ort_sys::OrtMemoryInfoDeviceType {
@@ -342,7 +343,7 @@ impl From<DeviceType> for ort_sys::OrtMemoryInfoDeviceType {
 		match value {
 			DeviceType::CPU => ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_CPU,
 			DeviceType::GPU => ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_GPU,
-			DeviceType::FPGA => ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_FPGA
+			DeviceType::FPGA => ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_FPGA,
 		}
 	}
 }
@@ -352,7 +353,7 @@ impl From<ort_sys::OrtMemoryInfoDeviceType> for DeviceType {
 		match value {
 			ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_CPU => DeviceType::CPU,
 			ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_GPU => DeviceType::GPU,
-			ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_FPGA => DeviceType::FPGA
+			ort_sys::OrtMemoryInfoDeviceType::OrtMemoryInfoDeviceType_FPGA => DeviceType::FPGA,
 		}
 	}
 }
@@ -367,7 +368,7 @@ impl From<ort_sys::OrtMemoryInfoDeviceType> for DeviceType {
 #[derive(Debug)]
 pub struct MemoryInfo {
 	ptr: NonNull<ort_sys::OrtMemoryInfo>,
-	should_release: bool
+	should_release: bool,
 }
 
 impl MemoryInfo {
@@ -397,7 +398,7 @@ impl MemoryInfo {
 		];
 		Ok(Self {
 			ptr: unsafe { NonNull::new_unchecked(memory_info_ptr) },
-			should_release: true
+			should_release: true,
 		})
 	}
 
@@ -452,7 +453,7 @@ impl MemoryInfo {
 		match raw_type {
 			ort_sys::OrtAllocatorType::OrtArenaAllocator => AllocatorType::Arena,
 			ort_sys::OrtAllocatorType::OrtDeviceAllocator => AllocatorType::Device,
-			_ => unreachable!()
+			_ => unreachable!(),
 		}
 	}
 

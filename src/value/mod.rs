@@ -17,13 +17,14 @@
 //! ONNX Runtime also supports [`Sequence`]s and [`Map`]s, though they are less commonly used.
 
 use alloc::{boxed::Box, format, sync::Arc};
+use bincode::Encode;
 use core::{
 	any::Any,
 	fmt::{self, Debug},
 	marker::PhantomData,
 	mem::transmute,
 	ops::{Deref, DerefMut},
-	ptr::{self, NonNull}
+	ptr::{self, NonNull},
 };
 
 mod impl_map;
@@ -34,29 +35,29 @@ pub(crate) mod r#type;
 pub use self::{
 	impl_map::{DynMap, DynMapRef, DynMapRefMut, DynMapValueType, Map, MapRef, MapRefMut, MapValueType, MapValueTypeMarker},
 	impl_sequence::{
-		DynSequence, DynSequenceRef, DynSequenceRefMut, DynSequenceValueType, Sequence, SequenceRef, SequenceRefMut, SequenceValueType, SequenceValueTypeMarker
+		DynSequence, DynSequenceRef, DynSequenceRefMut, DynSequenceValueType, Sequence, SequenceRef, SequenceRefMut, SequenceValueType, SequenceValueTypeMarker,
 	},
 	impl_tensor::{
 		DefiniteTensorValueTypeMarker, DynTensor, DynTensorRef, DynTensorRefMut, DynTensorValueType, OwnedTensorArrayData, Tensor, TensorArrayData,
-		TensorArrayDataMut, TensorArrayDataParts, TensorRef, TensorRefMut, TensorValueType, TensorValueTypeMarker, ToShape
+		TensorArrayDataMut, TensorArrayDataParts, TensorRef, TensorRefMut, TensorValueType, TensorValueTypeMarker, ToShape,
 	},
-	r#type::ValueType
+	r#type::ValueType,
 };
 use crate::{
 	AsPointer,
 	error::{Error, ErrorCode, Result},
 	memory::MemoryInfo,
 	ortsys,
-	session::SharedSessionInner
+	session::SharedSessionInner,
 };
 
 #[derive(Debug)]
-pub(crate) struct ValueInner {
+pub struct ValueInner {
 	pub(crate) ptr: NonNull<ort_sys::OrtValue>,
 	pub(crate) dtype: ValueType,
 	pub(crate) memory_info: Option<MemoryInfo>,
 	pub(crate) drop: bool,
-	pub(crate) _backing: Option<Box<dyn Any>>
+	pub(crate) _backing: Option<Box<dyn Any>>,
 }
 
 impl AsPointer for ValueInner {
@@ -82,7 +83,7 @@ impl Drop for ValueInner {
 pub struct ValueRef<'v, Type: ValueTypeMarker + ?Sized = DynValueTypeMarker> {
 	inner: Value<Type>,
 	pub(crate) upgradable: bool,
-	lifetime: PhantomData<&'v ()>
+	lifetime: PhantomData<&'v ()>,
 }
 
 impl<'v, Type: ValueTypeMarker + ?Sized> ValueRef<'v, Type> {
@@ -92,7 +93,7 @@ impl<'v, Type: ValueTypeMarker + ?Sized> ValueRef<'v, Type> {
 			// duration of the kernel, allowing an upgrade would allow a UAF.
 			upgradable: inner.inner.drop,
 			inner,
-			lifetime: PhantomData
+			lifetime: PhantomData,
 		}
 	}
 
@@ -135,7 +136,7 @@ impl<Type: ValueTypeMarker + ?Sized> Deref for ValueRef<'_, Type> {
 pub struct ValueRefMut<'v, Type: ValueTypeMarker + ?Sized = DynValueTypeMarker> {
 	inner: Value<Type>,
 	pub(crate) upgradable: bool,
-	lifetime: PhantomData<&'v ()>
+	lifetime: PhantomData<&'v ()>,
 }
 
 impl<'v, Type: ValueTypeMarker + ?Sized> ValueRefMut<'v, Type> {
@@ -145,7 +146,7 @@ impl<'v, Type: ValueTypeMarker + ?Sized> ValueRefMut<'v, Type> {
 			// duration of the kernel, allowing an upgrade would allow a UAF.
 			upgradable: inner.inner.drop,
 			inner,
-			lifetime: PhantomData
+			lifetime: PhantomData,
 		}
 	}
 
@@ -230,8 +231,8 @@ impl<Type: ValueTypeMarker + ?Sized> DerefMut for ValueRefMut<'_, Type> {
 /// [`Session`]: crate::session::Session
 #[derive(Debug)]
 pub struct Value<Type: ValueTypeMarker + ?Sized = DynValueTypeMarker> {
-	pub(crate) inner: Arc<ValueInner>,
-	pub(crate) _markers: PhantomData<Type>
+	pub inner: Arc<ValueInner>,
+	pub(crate) _markers: PhantomData<Type>,
 }
 
 /// A dynamic value, which could be a [`Tensor`], [`Sequence`], or [`Map`].
@@ -329,16 +330,16 @@ impl<Type: ValueTypeMarker + ?Sized> Value<Type> {
 				memory_info: MemoryInfo::from_value(ptr.as_ptr()),
 				dtype: ValueType::from_type_info(typeinfo_ptr),
 				drop: true,
-				_backing: session.map(|v| Box::new(v) as Box<dyn Any>)
+				_backing: session.map(|v| Box::new(v) as Box<dyn Any>),
 			}),
-			_markers: PhantomData
+			_markers: PhantomData,
 		}
 	}
 
 	/// A variant of [`Value::from_ptr`] that does not release the value upon dropping. Used in operator kernel
 	/// contexts.
 	#[must_use]
-	pub(crate) unsafe fn from_ptr_nodrop(ptr: NonNull<ort_sys::OrtValue>, session: Option<Arc<SharedSessionInner>>) -> Value<Type> {
+	pub unsafe fn from_ptr_nodrop(ptr: NonNull<ort_sys::OrtValue>, session: Option<Arc<SharedSessionInner>>) -> Value<Type> {
 		let mut typeinfo_ptr = ptr::null_mut();
 		ortsys![unsafe GetTypeInfo(ptr.as_ptr(), &mut typeinfo_ptr).expect("infallible")];
 		Value {
@@ -347,10 +348,17 @@ impl<Type: ValueTypeMarker + ?Sized> Value<Type> {
 				memory_info: MemoryInfo::from_value(ptr.as_ptr()),
 				dtype: ValueType::from_type_info(typeinfo_ptr),
 				drop: false,
-				_backing: session.map(|v| Box::new(v) as Box<dyn Any>)
+				_backing: session.map(|v| Box::new(v) as Box<dyn Any>),
 			}),
-			_markers: PhantomData
+			_markers: PhantomData,
 		}
+	}
+
+	/// A variant of [`Value::from_ptr`] that does not release the value upon dropping. Used in operator kernel
+	/// contexts.
+	pub unsafe fn leak(&mut self) {
+		let ptr: *mut ValueInner = Arc::as_ptr(&self.inner) as *mut ValueInner;
+		(*ptr).drop = false;
 	}
 
 	/// Create a view of this value's data.
@@ -395,10 +403,10 @@ impl<Type: ValueTypeMarker + ?Sized> Value<Type> {
 		unsafe { transmute::<&Value<Type>, &Value<OtherType>>(self) }
 	}
 
-	pub(crate) fn clone_of(value: &Self) -> Self {
+	pub fn clone_of(value: &Self) -> Self {
 		Self {
 			inner: Arc::clone(&value.inner),
-			_markers: PhantomData
+			_markers: PhantomData,
 		}
 	}
 }

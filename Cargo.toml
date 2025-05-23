@@ -86,9 +86,10 @@ webgpu = [ "ort-sys/webgpu" ]
 azure = [ "ort-sys/azure" ]
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
+bincode = { version = "2.0.0", features=["serde"] }
 ort-sys = { version = "=2.0.0-rc.9", path = "ort-sys", default-features = false }
-smallvec = { version = "=2.0.0-alpha.10", default-features = false }
-
+smallvec = { version = "=2.0.0-alpha.10", default-features = false , features = ["serde"]}
 ndarray = { version = "0.16", default-features = false, optional = true }
 libloading = { version = "0.8", optional = true }
 ureq = { version = "3", optional = true, default-features = false, features = [ "rustls" ] }
