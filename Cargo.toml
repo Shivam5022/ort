@@ -1,11 +1,11 @@
 [workspace]
-members = [ 'ort-sys' ]
+members = [ 'ort-sys' , 'examples/cudarc']
 default-members = [ '.' ]
 exclude = [
 	'backends/candle',
 	'backends/tract',
 	'examples/async-gpt2-api',
-	'examples/cudarc',
+	# 'examples/cudarc',
 	'examples/custom-ops',
 	'examples/gpt2',
 	'examples/model-info',

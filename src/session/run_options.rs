@@ -3,7 +3,7 @@ use core::{
 	ffi::{CStr, c_char, c_int},
 	marker::PhantomData,
 	mem,
-	ptr::{self, NonNull}
+	ptr::{self, NonNull},
 };
 
 use smallvec::SmallVec;
@@ -16,7 +16,7 @@ use crate::{
 	ortsys,
 	session::Output,
 	util::{MiniMap, STACK_SESSION_OUTPUTS, with_cstr},
-	value::{DynValue, Value, ValueTypeMarker}
+	value::{DynValue, Value, ValueTypeMarker},
 };
 
 /// Allows selecting/deselecting/preallocating the outputs of a [`Session`] inference call.
@@ -50,7 +50,7 @@ pub struct OutputSelector {
 	use_defaults: bool,
 	default_blocklist: Vec<String>,
 	allowlist: Vec<String>,
-	preallocated_outputs: MiniMap<String, Value>
+	preallocated_outputs: MiniMap<String, Value>,
 }
 
 impl Default for OutputSelector {
@@ -61,7 +61,7 @@ impl Default for OutputSelector {
 			use_defaults: true,
 			allowlist: Vec::new(),
 			default_blocklist: Vec::new(),
-			preallocated_outputs: MiniMap::new()
+			preallocated_outputs: MiniMap::new(),
 		}
 	}
 }
@@ -124,7 +124,7 @@ impl OutputSelector {
 
 	pub(crate) fn resolve_outputs<'a, 's: 'a>(
 		&'a self,
-		outputs: &'s [Output]
+		outputs: &'s [Output],
 	) -> (SmallVec<&'a str, { STACK_SESSION_OUTPUTS }>, SmallVec<Option<DynValue>, { STACK_SESSION_OUTPUTS }>) {
 		if self.use_defaults { outputs.iter() } else { [].iter() }
 			.map(|o| &o.name)
@@ -148,7 +148,7 @@ impl SelectedOutputMarker for HasSelectedOutputs {}
 pub(crate) struct UntypedRunOptions {
 	pub(crate) ptr: NonNull<ort_sys::OrtRunOptions>,
 	pub(crate) outputs: OutputSelector,
-	adapters: Vec<Arc<AdapterInner>>
+	adapters: Vec<Arc<AdapterInner>>,
 }
 
 impl UntypedRunOptions {
@@ -187,7 +187,7 @@ unsafe impl Send for UntypedRunOptions {}
 #[derive(Debug)]
 pub struct RunOptions<O: SelectedOutputMarker = NoSelectedOutputs> {
 	pub(crate) inner: UntypedRunOptions,
-	_marker: PhantomData<O>
+	_marker: PhantomData<O>,
 }
 
 // Only allow `Sync` if we don't have (potentially pre-allocated) outputs selected.
@@ -204,9 +204,9 @@ impl RunOptions {
 			inner: UntypedRunOptions {
 				ptr: unsafe { NonNull::new_unchecked(run_options_ptr) },
 				outputs: OutputSelector::default(),
-				adapters: Vec::new()
+				adapters: Vec::new(),
 			},
-			_marker: PhantomData
+			_marker: PhantomData,
 		})
 	}
 }
@@ -355,7 +355,7 @@ impl<O: SelectedOutputMarker> RunOptions<O> {
 	}
 
 	pub fn log_level(&self) -> Result<LogLevel> {
-		let mut log_level = ort_sys::OrtLoggingLevel::ORT_LOGGING_LEVEL_VERBOSE;
+		let mut log_level = ort_sys::OrtLoggingLevel::ORT_LOGGING_LEVEL_ERROR;
 		ortsys![unsafe RunOptionsGetRunLogSeverityLevel(self.ptr(), &mut log_level as *mut ort_sys::OrtLoggingLevel as *mut _)?];
 		Ok(LogLevel::from(log_level))
 	}

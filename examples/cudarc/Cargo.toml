@@ -5,14 +5,24 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ort = { path = "../../", features = [ "cuda", "fetch-models" ] }
-cudarc = "0.12"
+ort = { path = "../../", features = [ "cuda", "fetch-models", "tensorrt" ] }
+ort-sys = {path = "../../ort-sys"}
+nvidia-video-codec-sdk = {path = "../../../nvidia-video-codec-sdk"}
+ffmpeg-next = { path = "../../../rust-ffmpeg" }
+# ffmpeg-next = { git = "https://github.com/Shivam5022/rust-ffmpeg" }
+cudarc = { version = "0.16.4", features = ["std", "runtime", "driver", "nvrtc",  "cuda-version-from-build-system", "dynamic-linking"], default-features=false }
+# npp = "0.1.0"
+# cuda-rs = "0.1.9"
 anyhow = "1.0"
 ndarray = "0.16"
-image = "0.25"
+image = "0.24"
+imageproc = "0.23"
 tracing = "0.1"
 show-image = { version = "0.14", features = [ "image", "raqote" ] }
 tracing-subscriber = { version = "0.3", default-features = false, features = [ "env-filter", "fmt" ] }
+tokio = {version="1.45.0", features=["full"]}
+
+
 
 [[example]]
 name = "cudarc"
