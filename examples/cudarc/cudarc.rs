@@ -58,7 +58,7 @@ use cudarc::{
 	},
 	nvrtc::Ptx,
 };
-use ffmpeg::codec::Id;
+use ffmpeg::{codec::Id, software::scaler};
 use nvidia_video_codec_sdk::Decoder;
 use nvidia_video_codec_sdk::Dim;
 use nvidia_video_codec_sdk::Frame;
@@ -103,10 +103,12 @@ struct InitInfo {
 pub trait PacketProvider {
 	fn next_packet(&mut self) -> Option<Packet>;
 	fn codec_id(&self) -> Id;
+	fn parameters(&self) -> ffmpeg::codec::Parameters;
 }
 
 struct PacketProviderFromFile {
 	ictx: format::context::Input,
+	paramemters: ffmpeg::codec::Parameters,
 	codec_id: Id,
 	stream_id: i32,
 	filter: BSFContext,
@@ -116,6 +118,7 @@ impl PacketProviderFromFile {
 	fn new(file_path: &PathBuf) -> Self {
 		let ictx = format::input(file_path).unwrap();
 		let stream: ffmpeg::Stream<'_> = ictx.streams().best(ffmpeg::media::Type::Video).unwrap();
+		let paramemters: ffmpeg::codec::Parameters = stream.parameters();
 		let stream_id: i32 = stream.id();
 		let codec_id = stream.parameters().id();
 
@@ -130,7 +133,13 @@ impl PacketProviderFromFile {
 				panic!("Filter only done for h264 and hevc. Maybe add more");
 			}
 		};
-		PacketProviderFromFile { ictx, stream_id, filter, codec_id }
+		PacketProviderFromFile {
+			ictx,
+			paramemters,
+			stream_id,
+			filter,
+			codec_id,
+		}
 	}
 }
 impl PacketProvider for PacketProviderFromFile {
@@ -151,10 +160,15 @@ impl PacketProvider for PacketProviderFromFile {
 	fn codec_id(&self) -> Id {
 		self.codec_id
 	}
+
+	fn parameters(&self) -> ffmpeg::codec::Parameters {
+		self.paramemters.clone()
+	}
 }
 
 struct PacketProviderFromRTSP {
 	ictx: format::context::Input,
+	paramemters: ffmpeg::codec::Parameters,
 	codec_id: Id,
 	stream_id: i32,
 }
@@ -165,9 +179,15 @@ impl PacketProviderFromRTSP {
 		input_opts.set("max_delay", "500000"); // (Optional) reduce latency
 		let ictx = format::input_with_dictionary(file_path, input_opts).unwrap();
 		let stream: ffmpeg::Stream<'_> = ictx.streams().best(ffmpeg::media::Type::Video).unwrap();
+		let paramemters: ffmpeg::codec::Parameters = stream.parameters();
 		let stream_id: i32 = stream.id();
 		let codec_id = stream.parameters().id();
-		PacketProviderFromRTSP { ictx, codec_id, stream_id }
+		PacketProviderFromRTSP {
+			ictx,
+			paramemters,
+			codec_id,
+			stream_id,
+		}
 	}
 }
 impl PacketProvider for PacketProviderFromRTSP {
@@ -186,7 +206,117 @@ impl PacketProvider for PacketProviderFromRTSP {
 	fn codec_id(&self) -> Id {
 		self.codec_id
 	}
+
+	fn parameters(&self) -> ffmpeg::codec::Parameters {
+		self.paramemters.clone()
+	}
 }
+
+pub struct CpuFrameIter {
+	pending_frames: bool,
+	decoder: ffmpeg::decoder::Video,
+	scaler: ffmpeg::software::scaling::Context,
+	packet_provider: Box<dyn PacketProvider>,
+}
+
+impl CpuFrameIter {
+	fn convert_frame(&mut self, decoded: &ffmpeg::util::frame::Video) -> Frame {
+		let mut buffer: Vec<f32> = vec![0f32; 3 * 640 * 640];
+		let mut rgb_frame = ffmpeg::util::frame::Video::empty();
+		self.scaler.run(decoded, &mut rgb_frame).expect("Scaling failed");
+
+		let data = rgb_frame.data(0);
+		let stride = rgb_frame.stride(0);
+
+		for c in 0..3 {
+			for y in 0..640 {
+				for x in 0..640 {
+					let src_index = y * stride + x * 3 + c;
+					let dst_index = c * 640 * 640 + y * 640 + x;
+					buffer[dst_index] = data[src_index] as f32 / 255.0;
+				}
+			}
+		}
+
+		// copy to GPU only
+		let size: usize = 3 * 640 * 640 * 4;
+		let mut dev_ptr: *mut c_void = std::ptr::null_mut();
+		unsafe {
+			cudarc::runtime::sys::cudaMalloc(&mut dev_ptr, size);
+		}
+		unsafe {
+			let _res = cudarc::runtime::result::memcpy_htod_sync(dev_ptr, &buffer);
+		};
+
+		Frame::new(dev_ptr as u64, size)
+	}
+}
+
+impl TryFrom<InitInfo> for CpuFrameIter {
+	type Error = String;
+
+	fn try_from(init: InitInfo) -> Result<Self, Self::Error> {
+		let packet_provider: Box<dyn PacketProvider> = if init.is_rtsp {
+			Box::new(PacketProviderFromRTSP::new(&init.source_path))
+		} else {
+			Box::new(PacketProviderFromFile::new(&init.source_path))
+		};
+		let context_decoder = ffmpeg::codec::context::Context::from_parameters(packet_provider.parameters()).unwrap();
+
+		let decoder: ffmpeg::decoder::Video = context_decoder.decoder().video().unwrap();
+		let scaler: ffmpeg::software::scaling::Context = ffmpeg::software::scaling::Context::get(
+			decoder.format(),
+			decoder.width(),
+			decoder.height(),
+			ffmpeg::format::Pixel::RGB24,
+			init.resize_info.w as u32,
+			init.resize_info.h as u32,
+			ffmpeg::software::scaling::flag::Flags::BILINEAR,
+		)
+		.unwrap();
+
+		Ok(Self {
+			pending_frames: false,
+			decoder,
+			scaler,
+			packet_provider,
+		})
+	}
+}
+
+impl Iterator for CpuFrameIter {
+	type Item = Frame;
+
+	fn next(&mut self) -> Option<Self::Item> {
+		let mut decoded = ffmpeg::util::frame::Video::empty();
+
+		// Step 1: If we know there's a pending frame, try to receive it
+		if self.pending_frames {
+			if self.decoder.receive_frame(&mut decoded).is_ok() {
+				return Some(self.convert_frame(&decoded));
+			} else {
+				self.pending_frames = false;
+			}
+		}
+
+		// Step 2: Send packets until we receive a frame
+		loop {
+			let packet = self.packet_provider.next_packet();
+			if packet.is_some() {
+				self.decoder.send_packet(&packet.unwrap()).unwrap();
+				if self.decoder.receive_frame(&mut decoded).is_ok() {
+					self.pending_frames = true;
+					return Some(self.convert_frame(&decoded));
+				} else {
+					continue;
+				}
+			} else {
+				return None;
+			}
+		}
+	}
+}
+
 pub struct FrameIter {
 	num_decoded_frames: usize,
 	decoder: Decoder,
@@ -370,7 +500,7 @@ async fn main() -> anyhow::Result<()> {
 		// })
 		// .unwrap();
 
-		let mut frame_iter = FrameIter::try_from(InitInfo {
+		let mut frame_iter = CpuFrameIter::try_from(InitInfo {
 			source_path: PathBuf::from_str("/home/satyam/dev/videos/cats.mp4").unwrap(),
 			resize_info: Dim { w: WIDTH as i32, h: HEIGHT as i32 },
 			is_rtsp: false,
@@ -379,87 +509,76 @@ async fn main() -> anyhow::Result<()> {
 
 		let mut frame_cnt: i32 = 1;
 
-		// let frame_vec: Vec<Frame> = frame_iter.collect();
-		// let mut frame_vec = frame_vec.iter();
-
-		// while let Some(frame) = frame_vec.next() {
 		while let Some(frame) = frame_iter.next() {
-			// we have a CuDevicePtr available. Need to process it.
-			let rgb_size = WIDTH * HEIGHT * 3; // RGB size (3 bytes per pixel)
-
-			// will store rgb frame here
-			let mut rgb_ptr: cudarc::driver::CudaSlice<f32> = stream.alloc_zeros(rgb_size as usize).unwrap();
-
-			let mut builder = stream.launch_builder(&f);
-			builder.arg(&frame.ptr);
-			builder.arg(&mut rgb_ptr);
-			builder.arg(&WIDTH);
-			builder.arg(&HEIGHT);
-			builder.arg(&(WIDTH * 3 * std::mem::size_of::<f32>() as u32));
-
-			let block_size = (16, 16, 1);
-			let grid_size = ((WIDTH + block_size.0 - 1) / block_size.0, (HEIGHT + block_size.1 - 1) / block_size.1, 1);
-			let cfg = LaunchConfig {
-				grid_dim: grid_size,
-				block_dim: block_size,
-				shared_mem_bytes: 0,
-			};
-			unsafe { builder.launch(cfg) }?;
-
-			// // will store preprocessed CHW format frame here
-			let mut final_ptr: cudarc::driver::CudaSlice<f32> = stream.alloc_zeros(rgb_size as usize).unwrap();
-			let mut builder = stream.launch_builder(&g);
-			builder.arg(&rgb_ptr);
-			builder.arg(&mut final_ptr);
-			builder.arg(&WIDTH);
-			builder.arg(&HEIGHT);
-
-			let block_size = (16, 16, 1);
-			let grid_size = ((WIDTH + block_size.0 - 1) / block_size.0, (HEIGHT + block_size.1 - 1) / block_size.1, 1);
-			let cfg = LaunchConfig {
-				grid_dim: grid_size,
-				block_dim: block_size,
-				shared_mem_bytes: 0,
-			};
-			unsafe { builder.launch(cfg) }?;
-
-			// testing by bring back to host
-			if test_frame {
-				// let mut h_rgb = vec![0.0f32; final_ptr.len()];
-				// stream.memcpy_dtoh(&final_ptr, &mut h_rgb).unwrap();
-				// stream.synchronize().unwrap();
-
-				// if frame_cnt == 10 {
-				// 	save_chw_as_image(&h_rgb, WIDTH as usize, HEIGHT as usize, "/home/satyam/dev/xframe.png");
-				// }
-				// test ends
-			}
-			let mut input_ptr: *mut c_void = std::ptr::null_mut();
-			unsafe {
-				cudarc::runtime::sys::cudaMalloc(&mut input_ptr, rgb_size as usize);
-			}
-
 			let input_tensor: TensorRefMut<'_, f32> = unsafe {
 				TensorRefMut::from_raw(
 					MemoryInfo::new(AllocationDevice::CUDA, 0, AllocatorType::Device, MemoryType::Default)?,
-					final_ptr.device_ptr(&stream).0 as *mut ort_sys::c_void,
+					frame.ptr as *mut ort_sys::c_void,
 					Shape::new([1, 3, HEIGHT as i64, WIDTH as i64]),
 				)
 				.unwrap()
 			};
 
-			// let options = RunOptions::new()?;
 			let outputs = session.run(ort::inputs![input_tensor])?;
-			// let result = post_process(frame_iter.original_width as u32, frame_iter.original_height as u32, outputs)?;
 			let result = post_process(WIDTH as u32, HEIGHT as u32, outputs)?;
 			println!("{:?}", result);
 			println!("{frame_cnt}");
 			frame_cnt += 1;
 
-			// let cpu_frame = CpuFrame::from(frame);
-			// draw_boxes_on_yuv(cpu_frame.ptr, WIDTH as usize, HEIGHT as usize, &result, 1.0, 1.0);
-			// let slice = cpu_frame.to_slice();
-			// out_file.write(slice).unwrap();
+			// // this was for GPU raw frame from hardware decoder
+			// // we have a CuDevicePtr available. Need to process it.
+			// let rgb_size = WIDTH * HEIGHT * 3; // RGB size (3 bytes per pixel)
+
+			// // will store rgb frame here
+			// let mut rgb_ptr: cudarc::driver::CudaSlice<f32> = stream.alloc_zeros(rgb_size as usize).unwrap();
+
+			// let mut builder = stream.launch_builder(&f);
+			// builder.arg(&frame.ptr);
+			// builder.arg(&mut rgb_ptr);
+			// builder.arg(&WIDTH);
+			// builder.arg(&HEIGHT);
+			// builder.arg(&(WIDTH * 3 * std::mem::size_of::<f32>() as u32));
+
+			// let block_size = (16, 16, 1);
+			// let grid_size = ((WIDTH + block_size.0 - 1) / block_size.0, (HEIGHT + block_size.1 - 1) / block_size.1, 1);
+			// let cfg = LaunchConfig {
+			// 	grid_dim: grid_size,
+			// 	block_dim: block_size,
+			// 	shared_mem_bytes: 0,
+			// };
+			// unsafe { builder.launch(cfg) }?;
+
+			// // // will store preprocessed CHW format frame here
+			// let mut final_ptr: cudarc::driver::CudaSlice<f32> = stream.alloc_zeros(rgb_size as usize).unwrap();
+			// let mut builder = stream.launch_builder(&g);
+			// builder.arg(&rgb_ptr);
+			// builder.arg(&mut final_ptr);
+			// builder.arg(&WIDTH);
+			// builder.arg(&HEIGHT);
+
+			// let block_size = (16, 16, 1);
+			// let grid_size = ((WIDTH + block_size.0 - 1) / block_size.0, (HEIGHT + block_size.1 - 1) / block_size.1, 1);
+			// let cfg = LaunchConfig {
+			// 	grid_dim: grid_size,
+			// 	block_dim: block_size,
+			// 	shared_mem_bytes: 0,
+			// };
+			// unsafe { builder.launch(cfg) }?;
+			// let input_tensor: TensorRefMut<'_, f32> = unsafe {
+			// 	TensorRefMut::from_raw(
+			// 		MemoryInfo::new(AllocationDevice::CUDA, 0, AllocatorType::Device, MemoryType::Default)?,
+			// 		final_ptr.device_ptr(&stream).0 as *mut ort_sys::c_void,
+			// 		Shape::new([1, 3, HEIGHT as i64, WIDTH as i64]),
+			// 	)
+			// 	.unwrap()
+			// };
+
+			// let outputs = session.run(ort::inputs![input_tensor])?;
+			// // let result = post_process(frame_iter.original_width as u32, frame_iter.original_height as u32, outputs)?;
+			// let result = post_process(WIDTH as u32, HEIGHT as u32, outputs)?;
+			// println!("{:?}", result);
+			// println!("{frame_cnt}");
+			// frame_cnt += 1;
 		}
 	} else {
 		let img_path = "/home/satyam/dev/ort/examples/cudarc/data/car2.png";
